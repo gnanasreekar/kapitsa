@@ -78,7 +78,7 @@ def main():
         models_data = json.loads(body)
         check("Response has object list", models_data.get("object") == "list")
         check("Response has data array", isinstance(models_data.get("data"), list) and len(models_data["data"]) > 0)
-        
+
         first_model = models_data["data"][0]
         check("First model is active", first_model.get("active") is True)
         check("First model is 4b", "4b" in first_model.get("id"))
@@ -151,7 +151,7 @@ def main():
         check("Anthropic messages returns 200", status == 200, msg_resp)
         msg_data = json.loads(msg_resp)
         check("Anthropic response model is 9b", "9b" in msg_data.get("model", ""))
-        
+
         status, body4 = req("/v1/models")
         models_data4 = json.loads(body4)
         check("Active model is now 9b after Anthropic message", "9b" in models_data4["data"][0]["id"])
