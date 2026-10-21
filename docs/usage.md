@@ -237,6 +237,7 @@ screen too), otherwise to stderr; Ctrl+C stops it.
 | `--host HOST` | `127.0.0.1` | Listen address; `0.0.0.0` serves your network ([API keys and network access](#api-keys-and-network-access)). |
 | `--port PORT` | `8000` | Listen port. A port in use is an error. |
 | `--api-key KEY` | none | Require `Authorization: Bearer KEY` or `x-api-key: KEY`. |
+| `--allow-switch` | off | Let a request naming another model, or `POST /v1/models/switch`, load that model (it may download gigabytes). Off, the `model` field is ignored, as clients send names of their own. On a network `--host` it needs `--api-key`. |
 | `--model-id ID` | the model's name | The model's name in the API. |
 | `--context N` | `128k`, less where memory is tight | Context per conversation: tokens (`131072`), `k` or `m` of them (`128k`, `1m`), or `max`, the model's own limit ([Context](#context)). `--ctx N` works too. |
 | `--slots N` | `4` where memory allows, else `3` or `2` | Requests that run at once, each with its conversation's cache kept for follow-ups; more wait for a free slot, first come first served. |
@@ -360,7 +361,7 @@ OpenAI clients use the base URL `http://127.0.0.1:8000/v1`, Anthropic clients `h
 | `POST /v1/messages/count_tokens` | Anthropic's token count of a request. |
 | `GET /v1/models` | Available models (active model first, downloaded models, and catalog models); includes `active`, `downloaded`, `context_fit`, and `slots`. |
 | `GET /v1/models/:model` | Information about a specific model. |
-| `POST /v1/models/switch` | Explicitly switches active model: `{"model": "<name>"}`. |
+| `POST /v1/models/switch` | With `--allow-switch`: switches the active model, `{"model": "<name>"}` (403 without the flag). While it loads, other requests get 503 with `Retry-After`. A model that fails to load leaves the previous one serving. |
 | `GET /health` | `{"status":"ok"}` |
 | `GET /` | The chat page: one file with dynamic client-side model selection dropdown that talks only to this server and keeps its conversations in the browser. |
 

@@ -61,12 +61,19 @@ class ModelManager : public std::enable_shared_from_this<ModelManager> {
     if (tui_) ui::loading_end(ref_.name);
   }
 
-  // Acquire active engine for a request, switching on demand if another valid model is requested.
+  // --allow-switch: a request naming another model (or POST /v1/models/switch) may swap the served model. Off by
+  // default: clients send their own model names (Claude Code, Cursor), which the server ignores, as it always did.
+  void set_allow_switch(bool on) { allow_switch_ = on; }
+  bool allow_switch() const { return allow_switch_; }
+  // True while a switch loads the new model: requests get 503 + Retry-After instead of queueing behind it
+  bool switching() const { return switching_.load(); }
+
+  // Acquire active engine for a request, switching on demand if another valid model is requested and --allow-switch.
   std::shared_ptr<RequestGuard> acquire_request(const std::string& requested_model, std::string* error_out = nullptr) {
     std::shared_ptr<Engine> eng;
     {
       std::shared_lock<std::shared_mutex> lk(rw_mu_);
-      if (is_current_model_unlocked(requested_model)) {
+      if (!allow_switch_ || is_current_model_unlocked(requested_model)) {
         eng = engine_;
       }
     }
@@ -79,10 +86,22 @@ class ModelManager : public std::enable_shared_from_this<ModelManager> {
 
   // Explicitly switch the active model
   std::shared_ptr<Engine> switch_to(const std::string& target_model, std::string* error_out = nullptr) {
+    if (!allow_switch_) {
+      if (error_out) *error_out = "model switching is off (start the server with --allow-switch)";
+      return nullptr;
+    }
     if (target_model.empty()) {
       if (error_out) *error_out = "model name cannot be empty";
       return nullptr;
     }
+    if (switching_.exchange(true)) {
+      if (error_out) *error_out = "another model switch is in progress";
+      return nullptr;
+    }
+    struct Clear {
+      std::atomic<bool>& f;
+      ~Clear() { f = false; }
+    } clear{switching_};
 
     std::unique_lock<std::shared_mutex> lk(rw_mu_);
     if (is_current_model_unlocked(target_model)) {
@@ -156,6 +175,16 @@ class ModelManager : public std::enable_shared_from_this<ModelManager> {
     } catch (const std::exception& e) {
       if (tui_) ui::loading_end(new_ref.name);
       if (error_out) *error_out = std::string("Engine initialization failed: ") + e.what();
+      // the old model comes back, so a failed switch (memory, a bad checkpoint) leaves the server serving
+      logi("switch to %s failed (%s); reloading %s", new_ref.name.c_str(), e.what(), ref_.name.c_str());
+      if (tui_) ui::loading_begin(ref_.name);
+      try {
+        engine_ = std::make_shared<Engine>(opt_);
+      } catch (const std::exception& e2) {
+        logi("reloading %s failed too: %s", ref_.name.c_str(), e2.what());
+        if (error_out) *error_out += std::string("; reloading the previous model failed too: ") + e2.what();
+      }
+      if (tui_) ui::loading_end(ref_.name);
       return nullptr;
     }
     if (tui_) ui::loading_end(new_ref.name);
@@ -393,6 +422,8 @@ class ModelManager : public std::enable_shared_from_this<ModelManager> {
   time_t started_ = 0;
   std::string started_at_;
 
+  bool allow_switch_ = false;
+  std::atomic<bool> switching_{false};
   std::atomic<int> in_flight_{0};
   std::condition_variable_any in_flight_cv_;
 

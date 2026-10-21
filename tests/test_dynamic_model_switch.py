@@ -53,7 +53,7 @@ def wait_for_server(proc, timeout=60):
 def main():
     print(f"Starting Kapitsa server on port {PORT} with initial model 4b...")
     proc = subprocess.Popen(
-        [BINARY, "serve", "--model", "4b", "--port", str(PORT)],
+        [BINARY, "serve", "--model", "4b", "--port", str(PORT), "--allow-switch"],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True
@@ -187,6 +187,15 @@ def main():
         status, body5 = req("/v1/models")
         models_data5 = json.loads(body5)
         check("Active model switched to 4b via streaming", "4b" in models_data5["data"][0]["id"])
+
+        # 10. A switch that fails leaves the server on its model, and still answering
+        status, bad = req("/v1/models/switch", {"model": "no-such-model-xyz"})
+        check("Switch to an unknown model fails with 400", status == 400, bad)
+        status, body6 = req("/v1/models")
+        check("Active model unchanged after a failed switch", "4b" in json.loads(body6)["data"][0]["id"])
+        status, ok = req("/v1/chat/completions", {
+            "model": "default", "max_tokens": 4, "messages": [{"role": "user", "content": "hi"}]})
+        check("Server still answers after a failed switch", status == 200, ok)
 
         print("\nALL DYNAMIC MODEL SELECTION AND SWITCHING TESTS PASSED SUCCESSFULLY!")
 

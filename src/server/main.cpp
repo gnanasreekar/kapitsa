@@ -308,6 +308,9 @@ static void print_serve_help() {
          "  --port PORT            default 8000\n"
          "  --api-key KEY          require \"Authorization: Bearer KEY\" or \"x-api-key: KEY\" (the chat page asks for\n"
          "                         it once)\n"
+         "  --allow-switch         a request naming another model, or POST /v1/models/switch, loads it (may download\n"
+         "                         gigabytes; 503 + Retry-After meanwhile). Default off: the \"model\" field is ignored.\n"
+         "                         On a network address it needs --api-key\n"
          "  --model-id ID          the model's name in the API (default: the model's name)\n"
          "  --context N            context per conversation: tokens, k or m of them (128k, 1m), or max (the\n"
          "                         model's limit). Default: 128K, or less where this Mac's memory is tight (the\n"
@@ -609,13 +612,22 @@ static void exit_with_parent() {
   }).detach();
 }
 
+// While a model switch loads the new model, a request gets 503 and Retry-After (it does not queue behind the load)
+static bool reject_while_switching(const ModelManager& mgr, httplib::Response& res, const std::string& body) {
+  if (!mgr.switching()) return false;
+  res.status = 503;
+  res.set_header("Retry-After", "30");
+  res.set_content(body, "application/json");
+  return true;
+}
+
 static int serve(int argc, char** argv, int first) {
   exit_with_parent();
   EngineOptions opt;
   int context_req = 0;  // --context: 0 none (default_context), kContextMax, or tokens
   std::string host = "127.0.0.1", api_key, model;
   int port = 8000;
-  bool verbose = false, yes = false;
+  bool verbose = false, yes = false, allow_switch = false;
   const char* help = "kapitsa serve --help";
   for (int i = first; i < argc; ++i) {
     std::string a = argv[i];
@@ -640,6 +652,7 @@ static int serve(int argc, char** argv, int first) {
     else if (a == "--dflash") opt.dflash = next();
     else if (a == "--prefill-chunk") opt.prefill_chunk = to_int(a, next(), help);
     else if (a == "--api-key") api_key = next();
+    else if (a == "--allow-switch") allow_switch = true;
     else if (a == "--mem-budget") opt.mem_budget_gb = to_gb(a, next(), help);
     else if (a == "--image-max-pixels") opt.image_max_pixels = to_int(a, next(), help);
     else if (a == "--disk-cache") {
@@ -674,6 +687,8 @@ static int serve(int argc, char** argv, int first) {
     if (!opt.loop_kv.empty()) parse_loop_kv(opt.loop_kv, &kv);
     Dory::set_serving(opt.loops, kv);
   }
+  if (allow_switch && api_key.empty() && host != "127.0.0.1" && host != "localhost" && host != "::1")
+    usage_error("--allow-switch on a network address needs --api-key (any client could load models)", help);
   const bool tui = term::fancy();  // a terminal: the styled screen, the engine's log in a file
   if (tui) ui::serve_begin(verbose);
   std::vector<std::string> notes;  // the terminal UI's, shown under its header once the server will start
@@ -841,6 +856,7 @@ static int serve(int argc, char** argv, int first) {
   char started_at[32];
   strftime(started_at, sizeof started_at, "%Y-%m-%dT%H:%M:%SZ", gmtime(&started));
   auto model_mgr = std::make_shared<ModelManager>();
+  model_mgr->set_allow_switch(allow_switch);
   model_mgr->init(opt, ref, context_req, budget, tui, started, started_at);
   if (tui) term::guard_signals();  // the status block's signal handlers, which the stop handlers pass the signal on to
   SaveOnStop save_on_stop(*model_mgr);
@@ -895,6 +911,17 @@ static int serve(int argc, char** argv, int first) {
     }
   });
   srv.Post("/v1/models/switch", [model_mgr](const httplib::Request& req, httplib::Response& res) {
+    if (!model_mgr->allow_switch()) {
+      res.status = 403;
+      res.set_content(R"j({"error":{"message":"model switching is off (start the server with --allow-switch)","type":"invalid_request_error"}})j", "application/json");
+      return;
+    }
+    if (model_mgr->switching()) {
+      res.status = 503;
+      res.set_header("Retry-After", "30");
+      res.set_content(R"({"error":{"message":"another model switch is in progress","type":"server_error"}})", "application/json");
+      return;
+    }
     std::string target;
     try {
       json b = json::parse(req.body);
@@ -943,6 +970,7 @@ static int serve(int argc, char** argv, int first) {
     }
     const std::string req_model = body.value("model", "");
     std::string err;
+    if (reject_while_switching(*model_mgr, res, api::dump(api::chat_error("The server is switching models; retry shortly.")))) return;
     auto guard = model_mgr->acquire_request(req_model, &err);
     if (!guard) {
       res.status = 400;
@@ -1010,6 +1038,7 @@ static int serve(int argc, char** argv, int first) {
     }
     const std::string req_model = body.value("model", "");
     std::string err;
+    if (reject_while_switching(*model_mgr, res, api::dump(api::messages_error("overloaded_error", "The server is switching models; retry shortly.")))) return;
     auto guard = model_mgr->acquire_request(req_model, &err);
     if (!guard) {
       res.status = 400;
@@ -1055,6 +1084,7 @@ static int serve(int argc, char** argv, int first) {
     try {
       json b = json::parse(req.body);
       const std::string req_model = b.value("model", "");
+      if (reject_while_switching(*model_mgr, res, api::dump(api::messages_error("overloaded_error", "The server is switching models; retry shortly.")))) return;
       auto guard = model_mgr->acquire_request(req_model);
       if (!guard) {
         res.status = 400;
@@ -1086,6 +1116,7 @@ static int serve(int argc, char** argv, int first) {
     }
     const std::string req_model = body.value("model", "");
     std::string err;
+    if (reject_while_switching(*model_mgr, res, api::dump(api::responses_error("The server is switching models; retry shortly.", "server_error")))) return;
     auto guard = model_mgr->acquire_request(req_model, &err);
     if (!guard) {
       res.status = 400;
