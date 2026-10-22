@@ -922,3 +922,12 @@ again (`curl -fsSL https://raw.githubusercontent.com/nace-ai/kapitsa/main/instal
 `install.sh` placed (in `/opt/homebrew/bin`, `~/.local/bin` or your `--prefix`) and `../share/kapitsa` next to that
 folder (the license files, the benchmark harness, and `kapitsa.previous` after an update). Deleting `~/.cache/kapitsa` (or `$KAPITSA_HOME`)
 removes the models, logs, update state and the SSD prefix cache (`prefix-cache/` alone: the cache).
+
+`kapitsa bench --prefill-chunk N` overrides the server's prompt tokens per prefill pass in both the standard and
+optional context stages. Omit it to keep automatic memory planning. The report records the requested chunk size;
+models may balance the actual pass sizes. Without `--ctx`, these runs are labelled `prefill` or `prefill-quick`. Custom-chunk reports cannot be submitted as standard community benchmarks.
+
+```sh
+kapitsa bench --model 35b --prefill-chunk 4096
+kapitsa bench --model 35b --ctx 64k --prefill-chunk 4096 --out context-64k-chunk4096.json
+```
