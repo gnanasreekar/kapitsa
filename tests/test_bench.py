@@ -609,30 +609,20 @@ res = json.load(open(saved[0])) if saved else {}
 check(res.get("protocol", {}).get("temperature") == 1.0 and "decode T=1.0: median" in r.stderr and "T=0.6" not in r.stderr
       and "| Writing, T = 1.0 |" in r.stdout, "Flint from a folder: its writing at T = 1.0, shown and recorded",
       (r.stdout + r.stderr)[-500:])
-for value in ("0", "-1", "abc", "4096x", "99999999999999999"):
-    bad = run([KAPITSA, "bench", "--prefill-chunk", value], env=xenv)
-    check(bad.returncode != 0 and "prefill-chunk" in bad.stderr,
-          f"invalid prefill chunk {value!r} rejected before loading")
-bad = run([KAPITSA, "bench", "--prefill-chunk", "4096", "--submit"], env=xenv)
-check(bad.returncode != 0 and "standard community" in bad.stderr, "custom chunk submission rejected before loading")
-
 # Custom contexts exercise the real command against a server with deterministic token counting.
 Script.custom_context = 65536
 Script.log, Script.prompt = [], {}
 custom_file = os.path.join(xhome, "custom-64k.json")
-r = run([KAPITSA, "bench", "--model", "4b", "--ctx", "64k", "--quick", "--json", "--out", custom_file, "--prefill-chunk", "4096"], env=xenv)
+r = run([KAPITSA, "bench", "--model", "4b", "--ctx", "64k", "--quick", "--json", "--out", custom_file], env=xenv)
 custom = json.load(open(custom_file)) if os.path.exists(custom_file) else {}
 check(custom.get("mode") == "context-quick", "--ctx selects a labelled custom-context run", r.stderr[-500:])
 checkpoint_file = custom_file.removesuffix(".json") + ".standard.json"
 checkpoint = json.load(open(checkpoint_file)) if os.path.exists(checkpoint_file) else {}
-check(checkpoint.get("mode") == "prefill-quick" and "context" not in checkpoint and
+check(checkpoint.get("mode") == "quick" and "context" not in checkpoint and
       checkpoint.get("results") == custom.get("results") and "context_window" not in checkpoint.get("protocol", {}),
       "standard checkpoint is a standalone result saved before the context stage")
 check(not glob.glob(custom_file + ".tmp-*") and not glob.glob(checkpoint_file + ".tmp-*"),
       "atomic result writes leave no temporary files")
-check(custom.get("protocol", {}).get("prefill_chunk") == 4096 and
-      checkpoint.get("protocol", {}).get("prefill_chunk") == 4096,
-      "prefill chunk override is recorded in both context and standard reports")
 pr = custom.get("protocol", {})
 cx = custom.get("context", {})
 check(pr.get("context_window") == 65536 and pr.get("sizes") == [4000] and cx.get("reply_reserve_tokens") == 2048,
