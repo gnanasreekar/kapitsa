@@ -41,7 +41,7 @@ NI_INLINE void qr_load_x(const device uint4* X4, uint x_ld8, uint M, uint m0, ui
   }
 }
 
-template <int BM, int BK, int NT>
+template <int BM, int BK, int NT, int ABL = 0>
 NI_INLINE void qr_store_x(threadgroup half* xs, uint tid, thread const uint4* xr) {
   constexpr int CPR = BK / 8, XL = (BM * CPR + NT - 1) / NT, LD = BK + 8, WPL = BK / 32;
   _Pragma("clang loop unroll(full)")
@@ -49,13 +49,14 @@ NI_INLINE void qr_store_x(threadgroup half* xs, uint tid, thread const uint4* xr
     uint i = tid + j * NT, r = i / CPR, q = i % CPR;
     if (i < uint(BM * CPR)) {
       uint cc = q / WPL, h = q % WPL;
-      // halfs x[0..7] of the chunk: half2(x[f4], x[f4+4]) goes to fragment 4h+f4, column pair cc
       uint4 v = xr[j];
       threadgroup uint* dst = (threadgroup uint*)(xs + r * LD + 32 * h + 2 * cc);
-      dst[0] = (v.x & 0xFFFFu) | (v.z << 16);           // x0, x4
-      dst[4] = (v.x >> 16) | (v.z & 0xFFFF0000u);        // x1, x5
-      dst[8] = (v.y & 0xFFFFu) | (v.w << 16);           // x2, x6
-      dst[12] = (v.y >> 16) | (v.w & 0xFFFF0000u);       // x3, x7
+      ushort2 vx = as_type<ushort2>(v.x), vy = as_type<ushort2>(v.y);
+      ushort2 vz = as_type<ushort2>(v.z), vw = as_type<ushort2>(v.w);
+      dst[0] = as_type<uint>(ushort2(vx.x, vz.x));
+      dst[4] = as_type<uint>(ushort2(vx.y, vz.y));
+      dst[8] = as_type<uint>(ushort2(vy.x, vw.x));
+      dst[12] = as_type<uint>(ushort2(vy.y, vw.y));
     }
   }
 }
@@ -104,12 +105,15 @@ NI_INLINE void qr_mma(thread simdgroup_float8x8 (&acc)[FA][FB], threadgroup cons
       af[a].thread_elements()[0] = v.x;
       af[a].thread_elements()[1] = v.y;
     }
+    simdgroup_half8x8 bf[FB];
     _Pragma("clang loop unroll(full)")
     for (int b = 0; b < FB; ++b) {
-      simdgroup_half8x8 bf;
-      simdgroup_load(bf, xs + (sgm * TM + b * 8) * LD + 8 * f, LD, ulong2(0, 0), true);
+      simdgroup_load(bf[b], xs + (sgm * TM + b * 8) * LD + 8 * f, LD, ulong2(0, 0), true);
+    }
+    _Pragma("clang loop unroll(full)")
+    for (int b = 0; b < FB; ++b) {
       _Pragma("clang loop unroll(full)")
-      for (int a = 0; a < FA; ++a) simdgroup_multiply_accumulate(acc[a][b], af[a], bf, acc[a][b]);
+      for (int a = 0; a < FA; ++a) simdgroup_multiply_accumulate(acc[a][b], af[a], bf[b], acc[a][b]);
     }
   }
 }
@@ -152,7 +156,7 @@ NI_INLINE void qr_acc(const device half* X, const device uint32_t* const thread*
       for (int u = 0; u < NP * FA * WPL; ++u) wr[u] = k0 + u;
       for (int a = 0; a < NP * FA; ++a) sb[a] = half2(0.01h, 0.1h);
     }
-    if (!(ABL & 2)) qr_store_x<BM, BK, NT>(xs, tid, xr);
+    if (!(ABL & 16)) qr_store_x<BM, BK, NT, ABL>(xs, tid, xr);
     if (!(ABL & 4)) threadgroup_barrier(mem_flags::mem_threadgroup);
     qr_mma<NP * FA, FB, BK, TM, ABL>(acc, xs, sgm, wr, sb);
     if (!(ABL & 4)) threadgroup_barrier(mem_flags::mem_threadgroup);
@@ -343,12 +347,15 @@ NI_INLINE void qr_mma8(thread simdgroup_float8x8 (&acc)[FA][FB], threadgroup con
       af[a].thread_elements()[0] = v.x;
       af[a].thread_elements()[1] = v.y;
     }
+    simdgroup_half8x8 bf[FB];
     _Pragma("clang loop unroll(full)")
     for (int b = 0; b < FB; ++b) {
-      simdgroup_half8x8 bf;
-      simdgroup_load(bf, xs + (sgm * TM + b * 8) * LD + 8 * f, LD, ulong2(0, 0), true);
+      simdgroup_load(bf[b], xs + (sgm * TM + b * 8) * LD + 8 * f, LD, ulong2(0, 0), true);
+    }
+    _Pragma("clang loop unroll(full)")
+    for (int b = 0; b < FB; ++b) {
       _Pragma("clang loop unroll(full)")
-      for (int a = 0; a < FA; ++a) simdgroup_multiply_accumulate(acc[a][b], af[a], bf, acc[a][b]);
+      for (int a = 0; a < FA; ++a) simdgroup_multiply_accumulate(acc[a][b], af[a], bf[b], acc[a][b]);
     }
   }
 }
@@ -469,11 +476,20 @@ NI_QMR8_GU(qmr8_gu_k32_w14_m16_n64, 16, 64, 1, 4, 32)
 NI_QMR(qmr_k32_w14_m32_n128, 32, 128, 1, 4, 32)   // default for M >= 64: 80 GPRs, no stack
 NI_QMR_G(qmr_k32_w14_m32_n128_mf, 32, 128, 1, 4, 32, true)
 NI_QMR(qmr_k64_w14_m32_n128, 32, 128, 1, 4, 64)
+NI_QMR_G(qmr_k64_w14_m32_n128_mf, 32, 128, 1, 4, 64, true)
 NI_QMR(qmr_k64_w12_m32_n64, 32, 64, 1, 2, 64)     // as fast, but 96 GPRs + 16 B stack
 NI_QMR_G(qmr_k64_w12_m32_n64_mf, 32, 64, 1, 2, 64, true)
+NI_QMRA_G(qmra1_k64_w12_m32_n64_mf, 32, 64, 1, 2, 64, 1, true)
+NI_QMRA_G(qmra2_k64_w12_m32_n64_mf, 32, 64, 1, 2, 64, 2, true)
+NI_QMRA_G(qmra6_k64_w12_m32_n64_mf, 32, 64, 1, 2, 64, 6, true)
+NI_QMRA_G(qmra16_k64_w12_m32_n64_mf, 32, 64, 1, 2, 64, 16, true)
+NI_QMRA_G(qmra32_k64_w12_m32_n64_mf, 32, 64, 1, 2, 64, 32, true)
+NI_QMRA_G(qmra15_k64_w12_m32_n64_mf, 32, 64, 1, 2, 64, 15, true)
 NI_QMR(qmr_k32_w14_m64_n64, 64, 64, 1, 4, 32)
 NI_QMR(qmr_k64_w14_m64_n64, 64, 64, 1, 4, 64)
+NI_QMR_G(qmr_k64_w14_m64_n64_mf, 64, 64, 1, 4, 64, true)
 NI_QMR(qmr_k64_w14_m32_n64, 32, 64, 1, 4, 64)
+NI_QMR_G(qmr_k64_w14_m32_n64_mf, 32, 64, 1, 4, 64, true)
 NI_QMR(qmr_k64_w14_m16_n128, 16, 128, 1, 4, 64)
 NI_QMR(qmr_k64_w14_m16_n64, 16, 64, 1, 4, 64)     // M < 64 or N <= 64
 NI_QMR(qmr_k64_w12_m16_n64, 16, 64, 1, 2, 64)
