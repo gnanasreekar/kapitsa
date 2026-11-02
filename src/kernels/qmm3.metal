@@ -163,7 +163,7 @@ NI_INLINE void qr_acc(const device half* X, const device uint32_t* const thread*
 }
 
 // Dense GEMM with qmm_b4_*'s interface (QmmParams, buffers 0-5): Y (+)= X W^T, fp32 Y.
-#define NI_QMRA(NAME, BM, BN, WM, WN, BK, ABL)                                                            \
+#define NI_QMRA_G(NAME, BM, BN, WM, WN, BK, ABL, MFAST)                                                   \
   [[kernel, max_total_threads_per_threadgroup(WM * WN * 32)]] void NAME(                                    \
       const device half* X [[buffer(0)]], const device uint32_t* Wd [[buffer(1)]],                         \
       const device bfloat* Sd [[buffer(2)]], const device bfloat* Bd [[buffer(3)]],                        \
@@ -175,7 +175,8 @@ NI_INLINE void qr_acc(const device half* X, const device uint32_t* const thread*
     const device uint32_t* W[1] = {Wd};                                                                    \
     const device bfloat* S[1] = {Sd};                                                                      \
     const device bfloat* B[1] = {Bd};                                                                      \
-    const uint sgm = sg / WN, sgn = sg % WN, m0 = tg.y * BM, n0 = tg.x * BN;                               \
+    const uint mt = MFAST ? tg.x : tg.y, nt = MFAST ? tg.y : tg.x;                                        \
+    const uint sgm = sg / WN, sgn = sg % WN, m0 = mt * BM, n0 = nt * BN;                                   \
     const uint2 rc = qr_rc(lane);                                                                          \
     simdgroup_float8x8 acc[TN / 8][TM / 8];                                                                \
     qr_acc<BM, BN, WM, WN, BK, 1, ABL>(X, W, S, B, p.M, p.N, p.K, p.x_ld, m0, n0, (threadgroup half*)xs4,  \
@@ -197,11 +198,13 @@ NI_INLINE void qr_acc(const device half* X, const device uint32_t* const thread*
         }                                                                                                  \
     }                                                                                                      \
   }
+#define NI_QMRA(NAME, BM, BN, WM, WN, BK, ABL) NI_QMRA_G(NAME, BM, BN, WM, WN, BK, ABL, false)
 #define NI_QMR(NAME, BM, BN, WM, WN, BK) NI_QMRA(NAME, BM, BN, WM, WN, BK, 0)
+#define NI_QMR_G(NAME, BM, BN, WM, WN, BK, MFAST) NI_QMRA_G(NAME, BM, BN, WM, WN, BK, 0, MFAST)
 
 // Fused dense MLP gate/up: H[m, n] = half(silu(X Wg^T) * (X Wu^T)) (y_ld: halfs per H row); both
 // projections share the X tile. Buffers 0-5 as the dense kernel (W/S/B = gate, Y = H), 6-8 up.
-#define NI_QMR_GU(NAME, BM, BN, WM, WN, BK)                                                               \
+#define NI_QMR_GU_G(NAME, BM, BN, WM, WN, BK, MFAST)                                                     \
   [[kernel, max_total_threads_per_threadgroup(WM * WN * 32)]] void NAME(                                    \
       const device half* X [[buffer(0)]], const device uint32_t* Wg [[buffer(1)]],                         \
       const device bfloat* Sg [[buffer(2)]], const device bfloat* Bg [[buffer(3)]],                        \
@@ -215,7 +218,8 @@ NI_INLINE void qr_acc(const device half* X, const device uint32_t* const thread*
     const device uint32_t* W[2] = {Wg, Wu};                                                                \
     const device bfloat* S[2] = {Sg, Su};                                                                  \
     const device bfloat* B[2] = {Bg, Bu};                                                                  \
-    const uint sgm = sg / WN, sgn = sg % WN, m0 = tg.y * BM, n0 = tg.x * BN;                               \
+    const uint mt = MFAST ? tg.x : tg.y, nt = MFAST ? tg.y : tg.x;                                        \
+    const uint sgm = sg / WN, sgn = sg % WN, m0 = mt * BM, n0 = nt * BN;                                   \
     const uint2 rc = qr_rc(lane);                                                                          \
     simdgroup_float8x8 acc[2 * FA][TM / 8];                                                                \
     qr_acc<BM, BN, WM, WN, BK, 2, 0>(X, W, S, B, p.M, p.N, p.K, p.x_ld, m0, n0, (threadgroup half*)xs4,    \
@@ -234,6 +238,7 @@ NI_INLINE void qr_acc(const device half* X, const device uint32_t* const thread*
         }                                                                                                  \
     }                                                                                                      \
   }
+#define NI_QMR_GU(NAME, BM, BN, WM, WN, BK) NI_QMR_GU_G(NAME, BM, BN, WM, WN, BK, false)
 
 // Multi-projection form (NI_SHORTPF): up to 4 projections sharing X (same K, 4-bit g64), e.g. the
 // GDN in-proj (qkv, z, b, a) or attention q/k/v, in ONE dispatch: tg.x runs over the concatenated N
@@ -245,7 +250,7 @@ struct QmrSegParams {
   uint N[4], y_ld[4], add[4], tg_begin[5];
 };
 
-#define NI_QMR_SEG(NAME, BM, BN, WM, WN, BK)                                                              \
+#define NI_QMR_SEG_G(NAME, BM, BN, WM, WN, BK, MFAST)                                                     \
   [[kernel, max_total_threads_per_threadgroup(WM * WN * 32)]] void NAME(                                    \
       const device uint32_t* W0 [[buffer(0)]], const device bfloat* S0 [[buffer(1)]],                      \
       const device bfloat* B0 [[buffer(2)]], device float* Y0 [[buffer(3)]],                               \
@@ -260,14 +265,16 @@ struct QmrSegParams {
       uint sg [[simdgroup_index_in_threadgroup]], uint lane [[thread_index_in_simdgroup]]) {                \
     constexpr int TM = BM / WM, TN = BN / WN;                                                              \
     threadgroup uint4 xs4[BM * (BK + 8) / 8];                                                              \
+    const uint col_tg = MFAST ? tg.y : tg.x;                                                               \
+    const uint row_tg = MFAST ? tg.x : tg.y;                                                               \
     uint si = 0;                                                                                           \
-    while (si + 1 < p.nseg && tg.x >= p.tg_begin[si + 1]) ++si;                                             \
+    while (si + 1 < p.nseg && col_tg >= p.tg_begin[si + 1]) ++si;                                          \
     const device uint32_t* W[1] = {si == 0 ? W0 : si == 1 ? W1 : si == 2 ? W2 : W3};                       \
     const device bfloat* S[1] = {si == 0 ? S0 : si == 1 ? S1 : si == 2 ? S2 : S3};                         \
     const device bfloat* B[1] = {si == 0 ? B0 : si == 1 ? B1 : si == 2 ? B2 : B3};                         \
     device float* Y = si == 0 ? Y0 : si == 1 ? Y1 : si == 2 ? Y2 : Y3;                                     \
     const uint N = p.N[si], y_ld = p.y_ld[si], add = p.add[si];                                            \
-    const uint sgm = sg / WN, sgn = sg % WN, m0 = tg.y * BM, n0 = (tg.x - p.tg_begin[si]) * BN;            \
+    const uint sgm = sg / WN, sgn = sg % WN, m0 = row_tg * BM, n0 = (col_tg - p.tg_begin[si]) * BN;         \
     const uint2 rc = qr_rc(lane);                                                                          \
     simdgroup_float8x8 acc[TN / 8][TM / 8];                                                                \
     qr_acc<BM, BN, WM, WN, BK, 1, 0>(X, W, S, B, p.M, N, p.K, p.x_ld, m0, n0, (threadgroup half*)xs4, tid, \
@@ -289,6 +296,7 @@ struct QmrSegParams {
         }                                                                                                  \
     }                                                                                                      \
   }
+#define NI_QMR_SEG(NAME, BM, BN, WM, WN, BK) NI_QMR_SEG_G(NAME, BM, BN, WM, WN, BK, false)
 
 // ---- 8-bit form (qmr8_*): MLX affine 8-bit g64 weights (the 35B's router and shared-expert gate,
 // the MTP head's projections, quantized to 8 bits at load). A lane's 8 codes of a 32-block are 2
@@ -462,8 +470,10 @@ NI_QMR8_GU(qmr8_gu_k32_w14_m16_n64, 16, 64, 1, 4, 32)
 // naming: qmr[_gu]_k{BK}_w{WM}{WN}_m{BM}_n{BN}; threads 32*WM*WN; host requires bits 4, gs 64,
 // K % 64 == 0 (x_ld % 8 == 0). Rows/columns past M/N are computed on clamped rows and not stored.
 NI_QMR(qmr_k32_w14_m32_n128, 32, 128, 1, 4, 32)   // default for M >= 64: 80 GPRs, no stack
+NI_QMR_G(qmr_k32_w14_m32_n128_mf, 32, 128, 1, 4, 32, true)
 NI_QMR(qmr_k64_w14_m32_n128, 32, 128, 1, 4, 64)
 NI_QMR(qmr_k64_w12_m32_n64, 32, 64, 1, 2, 64)     // as fast, but 96 GPRs + 16 B stack
+NI_QMR_G(qmr_k64_w12_m32_n64_mf, 32, 64, 1, 2, 64, true)
 NI_QMR(qmr_k32_w14_m64_n64, 64, 64, 1, 4, 32)
 NI_QMR(qmr_k64_w14_m64_n64, 64, 64, 1, 4, 64)
 NI_QMR(qmr_k64_w14_m32_n64, 32, 64, 1, 4, 64)
@@ -481,6 +491,8 @@ NI_QMR(qmr_k64_w14_m56_n64, 56, 64, 1, 4, 64)
 NI_QMR_GU(qmr_gu_k64_w14_m24_n64, 24, 64, 1, 4, 64)
 NI_QMR_GU(qmr_gu_k32_w14_m32_n64, 32, 64, 1, 4, 32)
 NI_QMR_SEG(qmrs_k64_w12_m8_n64, 8, 64, 1, 2, 64)
+NI_QMR_SEG(qmrs_k64_w12_m32_n64, 32, 64, 1, 2, 64)
+NI_QMR_SEG_G(qmrs_k64_w12_m32_n64_mf, 32, 64, 1, 2, 64, true)
 NI_QMR_SEG(qmrs_k64_w14_m16_n64, 16, 64, 1, 4, 64)
 NI_QMR_SEG(qmrs_k64_w14_m24_n64, 24, 64, 1, 4, 64)
 NI_QMR_SEG(qmrs_k64_w14_m32_n64, 32, 64, 1, 4, 64)
@@ -490,6 +502,7 @@ NI_QMR_SEG(qmrs_k64_w14_m56_n64, 56, 64, 1, 4, 64)
 NI_QMR_SEG(qmrs_k64_w14_m64_n64, 64, 64, 1, 4, 64)
 
 NI_QMR_GU(qmr_gu_k64_w14_m32_n64, 32, 64, 1, 4, 64)
+NI_QMR_GU_G(qmr_gu_k64_w14_m32_n64_mf, 32, 64, 1, 4, 64, true)
 NI_QMR_GU(qmr_gu_k32_w12_m32_n32, 32, 32, 1, 2, 32)
 NI_QMR_GU(qmr_gu_k64_w14_m16_n64, 16, 64, 1, 4, 64)
 NI_QMR_GU(qmr_gu_k64_w12_m8_n32, 8, 32, 1, 2, 64)
