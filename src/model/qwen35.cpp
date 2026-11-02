@@ -3705,9 +3705,10 @@ void Qwen35::encode_prefill(Encoder& e, Seq& s, int pos0, int T, const SamplingP
         enc_mixer_prefill(e, s, i, L, pos0, T, x_, snap, snap_row);
       }
       if (cfg_.moe) {
-        static const int pref_k = env_int("NI_PREFILL_TOPK", 4);
-        static const int pref_tail = env_int("NI_PREFILL_TAIL", 64);
-        if (pref_k > 0 && pref_k < cfg_.top_k && T > pref_tail) {
+        static const int pref_k = env_int("NI_PREFILL_TOPK", Gpu::get().apple_family() <= 7 ? 2 : 4);
+        static const int pref_tail = env_int("NI_PREFILL_TAIL", 128);
+        static const int pref_min = env_int("NI_PREFILL_MIN", 1024);
+        if (pref_k > 0 && pref_k < cfg_.top_k && T >= pref_min && T > pref_tail) {
           int T_pre = T - pref_tail;
           enc_moe_prefill(e, L, T_pre, x_.view(0, size_t(T_pre) * D * 4), false, pref_k);
           enc_moe_prefill(e, L, pref_tail, x_.view(size_t(T_pre) * D * 4, size_t(pref_tail) * D * 4), false, cfg_.top_k);
