@@ -41,7 +41,7 @@ NI_INLINE void qr_load_x(const device uint4* X4, uint x_ld8, uint M, uint m0, ui
   }
 }
 
-template <int BM, int BK, int NT, int ABL = 0>
+template <int BM, int BK, int NT>
 NI_INLINE void qr_store_x(threadgroup half* xs, uint tid, thread const uint4* xr) {
   constexpr int CPR = BK / 8, XL = (BM * CPR + NT - 1) / NT, LD = BK + 8, WPL = BK / 32;
   _Pragma("clang loop unroll(full)")
@@ -156,7 +156,7 @@ NI_INLINE void qr_acc(const device half* X, const device uint32_t* const thread*
       for (int u = 0; u < NP * FA * WPL; ++u) wr[u] = k0 + u;
       for (int a = 0; a < NP * FA; ++a) sb[a] = half2(0.01h, 0.1h);
     }
-    if (!(ABL & 16)) qr_store_x<BM, BK, NT, ABL>(xs, tid, xr);
+    if (!(ABL & 2)) qr_store_x<BM, BK, NT>(xs, tid, xr);
     if (!(ABL & 4)) threadgroup_barrier(mem_flags::mem_threadgroup);
     qr_mma<NP * FA, FB, BK, TM, ABL>(acc, xs, sgm, wr, sb);
     if (!(ABL & 4)) threadgroup_barrier(mem_flags::mem_threadgroup);
@@ -479,12 +479,6 @@ NI_QMR(qmr_k64_w14_m32_n128, 32, 128, 1, 4, 64)
 NI_QMR_G(qmr_k64_w14_m32_n128_mf, 32, 128, 1, 4, 64, true)
 NI_QMR(qmr_k64_w12_m32_n64, 32, 64, 1, 2, 64)     // as fast, but 96 GPRs + 16 B stack
 NI_QMR_G(qmr_k64_w12_m32_n64_mf, 32, 64, 1, 2, 64, true)
-NI_QMRA_G(qmra1_k64_w12_m32_n64_mf, 32, 64, 1, 2, 64, 1, true)
-NI_QMRA_G(qmra2_k64_w12_m32_n64_mf, 32, 64, 1, 2, 64, 2, true)
-NI_QMRA_G(qmra6_k64_w12_m32_n64_mf, 32, 64, 1, 2, 64, 6, true)
-NI_QMRA_G(qmra16_k64_w12_m32_n64_mf, 32, 64, 1, 2, 64, 16, true)
-NI_QMRA_G(qmra32_k64_w12_m32_n64_mf, 32, 64, 1, 2, 64, 32, true)
-NI_QMRA_G(qmra15_k64_w12_m32_n64_mf, 32, 64, 1, 2, 64, 15, true)
 NI_QMR(qmr_k32_w14_m64_n64, 64, 64, 1, 4, 32)
 NI_QMR(qmr_k64_w14_m64_n64, 64, 64, 1, 4, 64)
 NI_QMR_G(qmr_k64_w14_m64_n64_mf, 64, 64, 1, 4, 64, true)
