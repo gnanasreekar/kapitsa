@@ -3685,7 +3685,7 @@ void Qwen35::encode_prefill(Encoder& e, Seq& s, int pos0, int T, const SamplingP
   if (ane_chunk_ && ane_wave_rows(T)) {
     enc_prefill_wave(e, s, pos0, T, ane_wave_rows(T));
   } else {
-    static const int mix_sub = env_int("NI_MIXER_CHUNK", 512);
+    static const int mix_sub = env_int("NI_MIXER_CHUNK", Gpu::get().apple_family() <= 7 ? 2048 : 512);
     for (int i = 0; i < cfg_.layers; ++i) {
       const Layer& L = layers_[i];
       if (mix_sub > 0 && T > mix_sub) {

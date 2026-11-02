@@ -95,24 +95,21 @@ template <int FA, int FB, int BK, int TM, int ABL>
 NI_INLINE void qr_mma(thread simdgroup_float8x8 (&acc)[FA][FB], threadgroup const half* xs, uint sgm,
                       thread const uint* wr, thread const half2* sb) {
   constexpr int LD = BK + 8, WPL = BK / 32, NF = BK / 8;
-  simdgroup_half8x8 af[NF][FA];
   _Pragma("clang loop unroll(full)")
   for (int f = 0; f < NF; ++f) {
+    simdgroup_half8x8 af[FA];
     _Pragma("clang loop unroll(full)")
     for (int a = 0; a < FA; ++a) {
       half2 v = (ABL & 1) ? as_type<half2>(wr[a * WPL + f / 4]) : qr_pair(wr[a * WPL + f / 4], f % 4, sb[a]);
-      af[f][a].thread_elements()[0] = v.x;
-      af[f][a].thread_elements()[1] = v.y;
+      af[a].thread_elements()[0] = v.x;
+      af[a].thread_elements()[1] = v.y;
     }
-  }
-  _Pragma("clang loop unroll(full)")
-  for (int f = 0; f < NF; ++f) {
     _Pragma("clang loop unroll(full)")
     for (int b = 0; b < FB; ++b) {
       simdgroup_half8x8 bf;
       simdgroup_load(bf, xs + (sgm * TM + b * 8) * LD + 8 * f, LD, ulong2(0, 0), true);
       _Pragma("clang loop unroll(full)")
-      for (int a = 0; a < FA; ++a) simdgroup_multiply_accumulate(acc[a][b], af[f][a], bf, acc[a][b]);
+      for (int a = 0; a < FA; ++a) simdgroup_multiply_accumulate(acc[a][b], af[a], bf, acc[a][b]);
     }
   }
 }
